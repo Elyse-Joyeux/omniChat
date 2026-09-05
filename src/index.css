@@ -25,4 +25,12 @@ button, input { font: inherit; }
 .auth-switch a { color: #5e4db7; font-weight: 700; text-decoration: none; }
 .auth-switch a:hover { text-decoration: underline; }
 .auth-error { color: #b42318; font-size: 0.85rem; line-height: 1.35; margin: 0.45rem 0 0; }
+.chats-page { display: flex; flex-direction: column; height: 100vh; }
+.nav-bar { align-items: center; background: #252047; color: #fff; display: flex; flex: 0 0 66px; justify-content: space-between; padding: 0 1.5rem; }
+.logo-tab { font-size: 0.9rem; font-weight: 800; letter-spacing: 0.12em; }
+.logout-tab { background: transparent; border: 1px solid rgba(255, 255, 255, 0.55); border-radius: 7px; color: #fff; cursor: pointer; padding: 0.4rem 0.75rem; }
+.chats-page .str-chat { flex: 1; min-height: 0; }
+.chats-loading, .chats-error { align-items: center; display: flex; justify-content: center; min-height: 100vh; padding: 1rem; text-align: center; }
+.chats-error { color: #b42318; }
+.error-logout { border-color: #b42318; color: #b42318; }
 @media (max-width: 480px) { .auth-card { border-radius: 16px; padding: 2rem 1.4rem; } }
