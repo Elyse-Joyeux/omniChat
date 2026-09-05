@@ -1,13 +1,21 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { GoogleOutlined } from "@ant-design/icons";
-import { Link } from "react-router-dom";
+import { Link, useHistory } from "react-router-dom";
 import firebase, { auth } from "../firebase";
+import { useAuth } from "../contexts/AuthContext";
+import { getFirebaseErrorMessage } from "../utils/errors";
 
 const Login = () => {
+  const history = useHistory();
+  const { user } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (user && !user.isAnonymous) history.replace("/chats");
+  }, [user, history]);
 
   const handleEmailSignIn = (event) => {
     event.preventDefault();
@@ -15,15 +23,30 @@ const Login = () => {
     setIsSubmitting(true);
     auth
       .signInWithEmailAndPassword(email.trim(), password)
-      .catch((signInError) => setError(signInError.message))
+      .then(() => history.replace("/chats"))
+      .catch((signInError) => setError(getFirebaseErrorMessage(signInError)))
       .finally(() => setIsSubmitting(false));
   };
 
   const handleGoogleSignIn = () => {
     const provider = new firebase.auth.GoogleAuthProvider();
+    setError("");
+    setIsSubmitting(true);
     auth
-      .signInWithRedirect(provider)
-      .catch((signInError) => setError(signInError.message));
+      .signInWithPopup(provider)
+      .then(() => history.replace("/chats"))
+      .catch((signInError) => setError(getFirebaseErrorMessage(signInError)))
+      .finally(() => setIsSubmitting(false));
+  };
+
+  const handleGuestSignIn = () => {
+    setError("");
+    setIsSubmitting(true);
+    auth
+      .signInAnonymously()
+      .then(() => history.replace("/chats"))
+      .catch((signInError) => setError(getFirebaseErrorMessage(signInError)))
+      .finally(() => setIsSubmitting(false));
   };
 
   return (
@@ -74,9 +97,18 @@ const Login = () => {
           className="google-button"
           type="button"
           onClick={handleGoogleSignIn}
+          disabled={isSubmitting}
         >
           <GoogleOutlined />
           Google
+        </button>
+        <button
+          className="guest-button"
+          type="button"
+          onClick={handleGuestSignIn}
+          disabled={isSubmitting}
+        >
+          Continue as guest
         </button>
         <p className="auth-switch">
           New to OmniChat? <Link to="/signup">Create an account</Link>
