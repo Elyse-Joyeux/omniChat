@@ -1,36 +1,77 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { GoogleOutlined } from "@ant-design/icons";
 import { Link, useHistory } from "react-router-dom";
 import firebase, { auth } from "../firebase";
+import { useAuth } from "../contexts/AuthContext";
+import { getFirebaseErrorMessage } from "../utils/errors";
 
 const Signup = () => {
   const history = useHistory();
+  const { user } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleEmailSignup = (event) => {
+  useEffect(() => {
+    if (user && !user.isAnonymous) history.replace("/chats");
+  }, [user, history]);
+
+  const handleEmailSignup = async (event) => {
     event.preventDefault();
     setError("");
+
     if (password !== confirmPassword) {
       setError("Your passwords do not match.");
       return;
     }
+
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+
     setIsSubmitting(true);
-    auth
-      .createUserWithEmailAndPassword(email.trim(), password)
-      .then(() => history.push("/login"))
-      .catch((signupError) => setError(signupError.message))
-      .finally(() => setIsSubmitting(false));
+
+    try {
+      const currentUser = auth.currentUser;
+
+      if (currentUser?.isAnonymous) {
+        const credential = firebase.auth.EmailAuthProvider.credential(email.trim(), password);
+        await currentUser.linkWithCredential(credential);
+      } else {
+        await auth.createUserWithEmailAndPassword(email.trim(), password);
+      }
+
+      history.replace("/chats");
+    } catch (signupError) {
+      setError(getFirebaseErrorMessage(signupError));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleGoogleSignup = () => {
+  const handleGoogleSignup = async () => {
     const provider = new firebase.auth.GoogleAuthProvider();
-    auth
-      .signInWithRedirect(provider)
-      .catch((signupError) => setError(signupError.message));
+    setError("");
+    setIsSubmitting(true);
+
+    try {
+      const currentUser = auth.currentUser;
+
+      if (currentUser?.isAnonymous) {
+        await currentUser.linkWithPopup(provider);
+      } else {
+        await auth.signInWithPopup(provider);
+      }
+
+      history.replace("/chats");
+    } catch (signupError) {
+      setError(getFirebaseErrorMessage(signupError));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -73,7 +114,7 @@ const Signup = () => {
             required
           />
           {error && (
-            <p className="auth-error" role="malert">
+            <p className="auth-error" role="alert">
               {error}
             </p>
           )}
@@ -92,6 +133,7 @@ const Signup = () => {
           className="google-button"
           type="button"
           onClick={handleGoogleSignup}
+          disabled={isSubmitting}
         >
           <GoogleOutlined />
           Google
