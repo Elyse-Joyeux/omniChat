@@ -1,6 +1,6 @@
 
 # dependencies
-/node_modules
+/node_modules/
 /.pnp
 .pnp.js
 
@@ -21,3 +21,4 @@ yarn-debug.log*
 yarn-error.log*
 
 src/firebase.js
+server/node_modules/
