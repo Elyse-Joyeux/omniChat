@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from "react";
-import { useHistory } from "react-router-dom";
+import React, { useEffect, useRef, useState } from "react";
+import { Link, useHistory } from "react-router-dom";
 import { StreamChat } from "stream-chat";
 import {
+  Attachment as DefaultAttachment,
   Channel,
   ChannelHeader,
   ChannelList,
@@ -14,9 +15,55 @@ import {
 import "stream-chat-react/css/index.css";
 import { auth } from "../firebase";
 import { useAuth } from "../contexts/AuthContext";
+import {
+  checkChatServerHealth,
+  fetchChatConfig,
+  getServerHealthMessage,
+} from "../utils/api";
+import {
+  fetchWithRetry,
+  getStreamErrorMessage,
+  isOnline,
+} from "../utils/errors";
 
-const streamApiKey = process.env.REACT_APP_STREAM_CHAT_API_KEY;
-const streamTokenUrl = process.env.REACT_APP_STREAM_CHAT_TOKEN_URL;
+const streamTokenUrl =
+  process.env.REACT_APP_STREAM_CHAT_TOKEN_URL || "/api/stream/token";
+
+const Attachment = (props) => {
+  const attachments = props.attachments || [];
+
+  return (
+    <div className="omni-attachments">
+      {attachments.map((attachment) => {
+        const isVideo = attachment.type === "video" || attachment.mime_type?.startsWith("video/");
+        const isImage = attachment.type === "image" || attachment.mime_type?.startsWith("image/");
+
+        if (isVideo && attachment.asset_url) {
+          return (
+            <div className="omni-attachment omni-attachment-video" key={attachment.id || attachment.asset_url}>
+              <video controls preload="metadata" src={attachment.asset_url}>
+                <track kind="captions" />
+              </video>
+              {attachment.title && <p className="omni-attachment-caption">{attachment.title}</p>}
+            </div>
+          );
+        }
+
+        if (isImage && (attachment.image_url || attachment.thumb_url || attachment.asset_url)) {
+          const src = attachment.image_url || attachment.thumb_url || attachment.asset_url;
+          return (
+            <div className="omni-attachment omni-attachment-image" key={attachment.id || src}>
+              <img src={src} alt={attachment.fallback || attachment.title || "Shared image"} loading="lazy" />
+              {attachment.title && <p className="omni-attachment-caption">{attachment.title}</p>}
+            </div>
+          );
+        }
+
+        return <DefaultAttachment key={attachment.id || attachment.asset_url} attachments={[attachment]} />;
+      })}
+    </div>
+  );
+};
 
 const Chats = () => {
   const history = useHistory();
@@ -24,32 +71,44 @@ const Chats = () => {
   const [client, setClient] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [retryCount, setRetryCount] = useState(0);
+  const [isOffline, setIsOffline] = useState(!isOnline());
+  const connectAttemptRef = useRef(0);
 
   useEffect(() => {
-    if (!user) {
-      // visitors use an anonymous Firebase session; no Firebase account is required.
-      auth.signInAnonymously().catch((signInError) => {
-        setError(signInError.message || "Unable to start a guest chat session.");
-        setLoading(false);
-      });
-      return undefined;
-    }
+    if (!user) return undefined;
 
-    if (!streamApiKey || !streamTokenUrl) {
-      setError("Stream Chat is not configured. Add the Stream environment variables and restart the app.");
+    if (!isOnline()) {
+      setError("You appear to be offline. Check your connection and try again.");
       setLoading(false);
       return undefined;
     }
 
-    const chatClient = StreamChat.getInstance(streamApiKey);
-    let isCurrent = true;
+    const attemptId = connectAttemptRef.current + 1;
+    connectAttemptRef.current = attemptId;
+    let chatClient = null;
 
-    const connectChat = async () => {
+    const connect = async () => {
+      setLoading(true);
+      setError("");
+
       try {
-        // stream token is issued by the server after it verifies this firebase ID token.
-        // never put the stream app secret in a REACT_APP_* variable.
-        const firebaseToken = await user.getIdToken();
-        const response = await fetch(streamTokenUrl, {
+        const health = await checkChatServerHealth();
+        if (!health.ok || !health.streamConfigured) {
+          throw new Error(getServerHealthMessage(health));
+        }
+
+        const { streamApiKey } = await fetchChatConfig();
+        chatClient = StreamChat.getInstance(streamApiKey);
+
+        if (chatClient.userID) {
+          await chatClient.disconnectUser();
+        }
+
+        if (attemptId !== connectAttemptRef.current) return;
+
+        const firebaseToken = await user.getIdToken(true);
+        const response = await fetchWithRetry(streamTokenUrl, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${firebaseToken}`,
@@ -61,10 +120,20 @@ const Chats = () => {
           }),
         });
 
-        if (!response.ok) throw new Error("Unable to get a Stream Chat token.");
+        const payload = await response.json().catch(() => ({}));
 
-        const { token } = await response.json();
-        if (!token) throw new Error("The Stream token response was invalid.");
+        if (!response.ok) {
+          throw new Error(payload.error || "Unable to get a chat session. Please try again.");
+        }
+
+        const { token } = payload;
+        if (!token) throw new Error("Unable to start chat. Please try again.");
+
+        if (attemptId !== connectAttemptRef.current) return;
+
+        if (chatClient.userID) {
+          await chatClient.disconnectUser();
+        }
 
         await chatClient.connectUser(
           {
@@ -75,32 +144,61 @@ const Chats = () => {
           token,
         );
 
-        if (isCurrent) {
-          setClient(chatClient);
-          setLoading(false);
-        } else {
+        if (attemptId !== connectAttemptRef.current) {
           await chatClient.disconnectUser();
+          return;
         }
+
+        setClient(chatClient);
+        setLoading(false);
       } catch (connectionError) {
-        if (isCurrent) {
-          setError(connectionError.message || "Unable to connect to Stream Chat.");
+        if (attemptId === connectAttemptRef.current) {
+          setError(getStreamErrorMessage(connectionError));
           setLoading(false);
         }
       }
     };
 
-    connectChat();
+    connect();
 
     return () => {
-      isCurrent = false;
-      if (chatClient.userID === user.uid) chatClient.disconnectUser();
+      connectAttemptRef.current += 1;
+      if (chatClient?.userID) {
+        chatClient.disconnectUser().catch(() => {});
+      }
     };
-  }, [user, history]);
+  }, [user, retryCount]);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
 
   const handleLogout = async () => {
-    if (client?.userID) await client.disconnectUser();
-    await auth.signOut();
-    history.push("/");
+    try {
+      if (client?.userID) await client.disconnectUser();
+      await auth.signOut();
+      history.push("/login");
+    } catch (logoutError) {
+      setError(getStreamErrorMessage(logoutError, "Unable to sign out. Please try again."));
+    }
+  };
+
+  const handleRetry = () => {
+    connectAttemptRef.current += 1;
+    if (client?.userID) {
+      client.disconnectUser().catch(() => {});
+      setClient(null);
+    }
+    setRetryCount((count) => count + 1);
   };
 
   if (error) {
@@ -108,30 +206,69 @@ const Chats = () => {
       <main className="chats-error" role="alert">
         <div>
           <p>{error}</p>
-          <button className="logout-tab error-logout" type="button" onClick={handleLogout}>
-            Logout
-          </button>
+          <div className="error-actions">
+            <button className="logout-tab error-retry" type="button" onClick={handleRetry}>
+              Try again
+            </button>
+            <button className="logout-tab error-logout" type="button" onClick={handleLogout}>
+              Logout
+            </button>
+          </div>
         </div>
       </main>
     );
   }
 
-  if (!user || loading) {
+  if (!user || loading || !client) {
     return <main className="chats-loading">Connecting to chat…</main>;
   }
 
   const filters = { type: "messaging", members: { $in: [user.uid] } };
   const sort = { last_message_at: -1 };
+  const options = { state: true, watch: true, presence: true, limit: 20 };
+
+  const displayName = user.displayName || user.email || `Guest ${user.uid.slice(0, 6)}`;
+  const isGuest = user.isAnonymous;
 
   return (
     <div className="chats-page">
+      {isOffline && (
+        <div className="offline-banner" role="status">
+          You are offline. Messages will send when your connection returns.
+        </div>
+      )}
       <div className="nav-bar">
-        <div className="logo-tab">OMNICHAT</div>
-        <button className="logout-tab" type="button" onClick={handleLogout}>Logout</button>
+        <div className="nav-left">
+          <div className="logo-tab">OMNICHAT</div>
+          <div className="user-meta">
+            <span className="user-name">{displayName}</span>
+            {isGuest && <span className="guest-badge">Guest</span>}
+          </div>
+        </div>
+        <div className="nav-actions">
+          {isGuest && (
+            <>
+              <Link className="nav-link" to="/login">
+                Sign in
+              </Link>
+              <Link className="nav-link nav-link-primary" to="/signup">
+                Create account
+              </Link>
+            </>
+          )}
+          <button className="logout-tab" type="button" onClick={handleLogout}>
+            Logout
+          </button>
+        </div>
       </div>
       <Chat client={client} theme="messaging light">
-        <ChannelList filters={filters} sort={sort} options={{ state: true, watch: true }} />
-        <Channel>
+        <ChannelList
+          filters={filters}
+          sort={sort}
+          options={options}
+          showChannelSearch
+        />
+        <Channel Attachment={Attachment}>
           <Window>
             <ChannelHeader />
             <MessageList />
@@ -144,4 +281,4 @@ const Chats = () => {
   );
 };
 
-export default Chats
+export default Chats;
