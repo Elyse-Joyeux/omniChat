@@ -198,6 +198,85 @@ async function handleStreamToken(req, res) {
 app.post("/api/stream-token", handleStreamToken);
 app.post("/api/stream/token", handleStreamToken);
 
+app.get("/api/users", async (req, res) => {
+  try {
+    if (!streamClient) {
+      return res.status(503).json({ error: "Chat is temporarily unavailable." });
+    }
+
+    const decoded = await verifyFirebaseToken(req.headers.authorization);
+    const search = String(req.query.search || "").trim();
+    const filter = { id: { $ne: decoded.uid } };
+
+    if (search) {
+      filter.$or = [
+        { name: { $autocomplete: search } },
+        { id: { $autocomplete: search } },
+      ];
+    }
+
+    const { users } = await streamClient.queryUsers(
+      filter,
+      { last_active: -1 },
+      { limit: 30 },
+    );
+
+    return res.json({
+      users: users.map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        image: entry.image,
+        online: Boolean(entry.online),
+      })),
+    });
+  } catch (error) {
+    const status = error.status || 500;
+    const message = status >= 500
+      ? "Unable to load users right now."
+      : (error.message || "Unable to load users.");
+    return res.status(status).json({ error: message });
+  }
+});
+
+app.post("/api/channels", async (req, res) => {
+  try {
+    if (!streamClient) {
+      return res.status(503).json({ error: "Chat is temporarily unavailable." });
+    }
+
+    const decoded = await verifyFirebaseToken(req.headers.authorization);
+    const { memberIds = [], name } = req.body || {};
+    const uniqueMembers = [...new Set([decoded.uid, ...memberIds.filter(Boolean)])];
+
+    if (uniqueMembers.length < 2) {
+      return res.status(400).json({ error: "Select at least one person to chat with." });
+    }
+
+    const channelData = {
+      members: uniqueMembers,
+    };
+
+    if (name && uniqueMembers.length > 2) {
+      channelData.name = String(name).trim().slice(0, 60) || "Group chat";
+    }
+
+    const channel = streamClient.channel("messaging", channelData);
+    await channel.create();
+
+    return res.json({
+      channelId: channel.id,
+      channelType: channel.type,
+    });
+  } catch (error) {
+    const status = error.status || 500;
+    const message = status >= 500
+      ? "Unable to create chat right now."
+      : (error.message || "Unable to create chat.");
+    console.error("Create channel error:", error);
+    return res.status(status).json({ error: message });
+  }
+});
+
 app.use((err, _req, res, _next) => {
   console.error(err);
   res.status(500).json({ error: "Something went wrong on the server." });
