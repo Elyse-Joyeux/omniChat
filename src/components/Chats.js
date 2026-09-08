@@ -10,11 +10,14 @@ import {
   MessageComposer,
   MessageList,
   Thread,
+  TypingIndicator,
   Window,
+  useChatContext,
 } from "stream-chat-react";
 import "stream-chat-react/css/index.css";
 import { auth } from "../firebase";
 import { useAuth } from "../contexts/AuthContext";
+import CreateChatModal, { ChannelSidebarHeader } from "./CreateChatModal";
 import {
   checkChatServerHealth,
   fetchChatConfig,
@@ -62,6 +65,87 @@ const Attachment = (props) => {
         return <DefaultAttachment key={attachment.id || attachment.asset_url} attachments={[attachment]} />;
       })}
     </div>
+  );
+};
+
+const ChatWorkspace = ({ user, client, isGuest, isOffline, onLogout }) => {
+  const { setActiveChannel } = useChatContext();
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [authToken, setAuthToken] = useState("");
+
+  useEffect(() => {
+    let isCurrent = true;
+
+    user.getIdToken().then((token) => {
+      if (isCurrent) setAuthToken(token);
+    });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [user]);
+
+  const displayName = user.displayName || user.email || `Guest ${user.uid.slice(0, 6)}`;
+  const filters = { type: "messaging", members: { $in: [user.uid] } };
+  const sort = { last_message_at: -1 };
+  const options = { state: true, watch: true, presence: true, limit: 20 };
+
+  return (
+    <>
+      {isOffline && (
+        <div className="offline-banner" role="status">
+          You are offline. Messages will send when your connection returns.
+        </div>
+      )}
+      <div className="nav-bar">
+        <div className="nav-left">
+          <div className="logo-tab">OMNICHAT</div>
+          <div className="user-meta">
+            <span className="user-name">{displayName}</span>
+            {isGuest && <span className="guest-badge">Guest</span>}
+          </div>
+        </div>
+        <div className="nav-actions">
+          {isGuest && (
+            <>
+              <Link className="nav-link" to="/login">
+                Sign in
+              </Link>
+              <Link className="nav-link nav-link-primary" to="/signup">
+                Create account
+              </Link>
+            </>
+          )}
+          <button className="logout-tab" type="button" onClick={onLogout}>
+            Logout
+          </button>
+        </div>
+      </div>
+      <div className="chat-layout">
+        <aside className="channel-list-panel">
+          <ChannelSidebarHeader onCreateClick={() => setShowCreateModal(true)} />
+          <ChannelList filters={filters} sort={sort} options={options} />
+        </aside>
+        <Channel Attachment={Attachment}>
+          <Window>
+            <ChannelHeader />
+            <MessageList />
+            <TypingIndicator />
+            <MessageComposer focus />
+          </Window>
+          <Thread />
+        </Channel>
+      </div>
+      {showCreateModal && authToken && (
+        <CreateChatModal
+          client={client}
+          currentUser={user}
+          authToken={authToken}
+          onClose={() => setShowCreateModal(false)}
+          onChannelCreated={setActiveChannel}
+        />
+      )}
+    </>
   );
 };
 
@@ -223,59 +307,18 @@ const Chats = () => {
     return <main className="chats-loading">Connecting to chat…</main>;
   }
 
-  const filters = { type: "messaging", members: { $in: [user.uid] } };
-  const sort = { last_message_at: -1 };
-  const options = { state: true, watch: true, presence: true, limit: 20 };
-
-  const displayName = user.displayName || user.email || `Guest ${user.uid.slice(0, 6)}`;
   const isGuest = user.isAnonymous;
 
   return (
     <div className="chats-page">
-      {isOffline && (
-        <div className="offline-banner" role="status">
-          You are offline. Messages will send when your connection returns.
-        </div>
-      )}
-      <div className="nav-bar">
-        <div className="nav-left">
-          <div className="logo-tab">OMNICHAT</div>
-          <div className="user-meta">
-            <span className="user-name">{displayName}</span>
-            {isGuest && <span className="guest-badge">Guest</span>}
-          </div>
-        </div>
-        <div className="nav-actions">
-          {isGuest && (
-            <>
-              <Link className="nav-link" to="/login">
-                Sign in
-              </Link>
-              <Link className="nav-link nav-link-primary" to="/signup">
-                Create account
-              </Link>
-            </>
-          )}
-          <button className="logout-tab" type="button" onClick={handleLogout}>
-            Logout
-          </button>
-        </div>
-      </div>
       <Chat client={client} theme="messaging light">
-        <ChannelList
-          filters={filters}
-          sort={sort}
-          options={options}
-          showChannelSearch
+        <ChatWorkspace
+          user={user}
+          client={client}
+          isGuest={isGuest}
+          isOffline={isOffline}
+          onLogout={handleLogout}
         />
-        <Channel Attachment={Attachment}>
-          <Window>
-            <ChannelHeader />
-            <MessageList />
-            <MessageComposer focus />
-          </Window>
-          <Thread />
-        </Channel>
       </Chat>
     </div>
   );
